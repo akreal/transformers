@@ -423,7 +423,7 @@ def main():
 
     # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
     # information sent is the one passed as arguments along with your Python/PyTorch versions.
-    send_example_telemetry("run_speech_recognition_ctc", model_args, data_args)
+    #send_example_telemetry("run_speech_recognition_ctc", model_args, data_args)
 
     # Detecting last checkpoint.
     last_checkpoint = None
@@ -544,46 +544,6 @@ def main():
     # We need to make sure that only first rank saves vocabulary
     # make sure all processes wait until vocab is created
     tokenizer_name_or_path = model_args.tokenizer_name_or_path
-    tokenizer_kwargs = {}
-    if tokenizer_name_or_path is None:
-        # save vocab in training output dir
-        tokenizer_name_or_path = training_args.output_dir
-
-        vocab_file = os.path.join(tokenizer_name_or_path, "vocab.json")
-
-        with training_args.main_process_first():
-            if training_args.overwrite_output_dir and os.path.isfile(vocab_file):
-                try:
-                    os.remove(vocab_file)
-                except OSError:
-                    # in shared file-systems it might be the case that
-                    # two processes try to delete the vocab file at the some time
-                    pass
-
-        with training_args.main_process_first(desc="dataset map vocabulary creation"):
-            if not os.path.isfile(vocab_file):
-                os.makedirs(tokenizer_name_or_path, exist_ok=True)
-                vocab_dict = create_vocabulary_from_data(
-                    raw_datasets,
-                    word_delimiter_token=word_delimiter_token,
-                    unk_token=unk_token,
-                    pad_token=pad_token,
-                )
-
-                # save vocab dict to be loaded into tokenizer
-                with open(vocab_file, "w") as file:
-                    json.dump(vocab_dict, file)
-
-        # if tokenizer has just been created
-        # it is defined by `tokenizer_class` if present in config else by `model_type`
-        tokenizer_kwargs = {
-            "config": config if config.tokenizer_class is not None else None,
-            "tokenizer_type": config.model_type if config.tokenizer_class is None else None,
-            "unk_token": unk_token,
-            "pad_token": pad_token,
-            "word_delimiter_token": word_delimiter_token,
-        }
-
     # 5. Now we can instantiate the feature extractor, tokenizer and model
     # Note for distributed training, the .from_pretrained methods guarantee that only
     # one local process can concurrently download model & vocab.
@@ -684,16 +644,6 @@ def main():
             remove_columns=next(iter(raw_datasets.values())).column_names,
             num_proc=num_workers,
             desc="preprocess datasets",
-        )
-
-        def is_audio_in_length_range(length):
-            return length > min_input_length and length < max_input_length
-
-        # filter data that is shorter than min_input_length
-        vectorized_datasets = vectorized_datasets.filter(
-            is_audio_in_length_range,
-            num_proc=num_workers,
-            input_columns=["input_length"],
         )
 
     # 7. Next, we can prepare the training.

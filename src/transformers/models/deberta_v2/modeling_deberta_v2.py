@@ -25,6 +25,7 @@ from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, LayerNorm, MSELoss
 from ...activations import ACT2FN
 from ...modeling_outputs import (
     BaseModelOutput,
+    CausalLMOutput,
     MaskedLMOutput,
     MultipleChoiceModelOutput,
     QuestionAnsweringModelOutput,
@@ -32,6 +33,7 @@ from ...modeling_outputs import (
     TokenClassifierOutput,
 )
 from ...modeling_utils import PreTrainedModel
+from ...models.auto.modeling_auto import AutoModelForCausalLM
 from ...pytorch_utils import softmax_backward_data
 from ...utils import add_code_sample_docstrings, add_start_docstrings, add_start_docstrings_to_model_forward, logging
 from .configuration_deberta_v2 import DebertaV2Config
@@ -1427,6 +1429,105 @@ class DebertaV2ForTokenClassification(DebertaV2PreTrainedModel):
             return ((loss,) + output) if loss is not None else output
 
         return TokenClassifierOutput(
+            loss=loss, logits=logits, hidden_states=outputs.hidden_states, attentions=outputs.attentions
+        )
+
+
+@add_start_docstrings(
+    """DebertaV2 Model with a `language modeling` head on top for Connectionist Temporal Classification (CTC).""",
+)
+class DebertaV2ForCTC(DebertaV2PreTrainedModel):
+    def __init__(self, config, input_dim, output_model_name):
+        super().__init__(config)
+
+        self.deberta = DebertaV2Model(config)
+        del self.deberta.embeddings.word_embeddings
+
+        self.input_proj = nn.Linear(input_dim, config.hidden_size)
+
+        output_model = AutoModelForCausalLM.from_pretrained(output_model_name)
+        self.config.pad_token_id = output_model.config.pad_token_id
+        self.output_proj = nn.Linear(config.hidden_size, output_model.config.hidden_size)
+        self.lm_head = output_model.lm_head
+        self.lm_head.requires_grad_(False)
+        output_model = None
+
+        self.config.ctc_loss_reduction = "mean"
+        self.config.ctc_zero_infinity = False
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
+    def forward(
+        self,
+        input_values: Optional[torch.Tensor],
+        attention_mask: Optional[torch.Tensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        labels: Optional[torch.Tensor] = None,
+    ) -> Union[Tuple, CausalLMOutput]:
+        r"""
+        labels (`torch.LongTensor` of shape `(batch_size, target_length)`, *optional*):
+            Labels for connectionist temporal classification. Note that `target_length` has to be smaller or equal to
+            the sequence length of the output logits. Indices are selected in `[-100, 0, ..., config.vocab_size - 1]`.
+            All labels set to `-100` are ignored (masked), the loss is only computed for labels in `[0, ...,
+            config.vocab_size - 1]`.
+        """
+
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        inputs_embeds = self.input_proj(input_values)
+
+        outputs = self.deberta(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        hidden_states = outputs[0]
+        hidden_states = self.output_proj(hidden_states)
+
+        logits = self.lm_head(hidden_states)
+
+        loss = None
+        if labels is not None:
+            if labels.max() >= self.config.vocab_size:
+                raise ValueError(f"Label values must be <= vocab_size: {self.config.vocab_size}")
+
+            # retrieve loss input_lengths from attention_mask
+            attention_mask = (
+                attention_mask if attention_mask is not None else torch.ones_like(input_values, dtype=torch.long)
+            )
+            input_lengths = attention_mask.sum(-1).to(torch.long)
+
+            # assuming that padded tokens are filled with -100
+            # when not being attended to
+            labels_mask = labels >= 0
+            target_lengths = labels_mask.sum(-1)
+            flattened_targets = labels.masked_select(labels_mask)
+
+            # ctc_loss doesn't support fp16
+            log_probs = nn.functional.log_softmax(logits, dim=-1, dtype=torch.float32).transpose(0, 1)
+
+            with torch.backends.cudnn.flags(enabled=False):
+                loss = nn.functional.ctc_loss(
+                    log_probs,
+                    flattened_targets,
+                    input_lengths,
+                    target_lengths,
+                    blank=self.config.pad_token_id,
+                    reduction=self.config.ctc_loss_reduction,
+                    zero_infinity=self.config.ctc_zero_infinity,
+                )
+
+        if not return_dict:
+            output = (logits,) + outputs[_HIDDEN_STATES_START_POSITION:]
+            return ((loss,) + output) if loss is not None else output
+
+        return CausalLMOutput(
             loss=loss, logits=logits, hidden_states=outputs.hidden_states, attentions=outputs.attentions
         )
 

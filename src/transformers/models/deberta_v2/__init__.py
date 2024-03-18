@@ -66,6 +66,7 @@ else:
         "DebertaV2ForQuestionAnswering",
         "DebertaV2ForSequenceClassification",
         "DebertaV2ForTokenClassification",
+        "DebertaV2ForCTC",
         "DebertaV2Model",
         "DebertaV2PreTrainedModel",
     ]
@@ -117,6 +118,7 @@ if TYPE_CHECKING:
             DebertaV2ForQuestionAnswering,
             DebertaV2ForSequenceClassification,
             DebertaV2ForTokenClassification,
+            DebertaV2ForCTC,
             DebertaV2Model,
             DebertaV2PreTrainedModel,
         )
